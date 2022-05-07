@@ -1,26 +1,27 @@
 import jax.scipy
 import jax.lax
 import jax.numpy as jnp
-import numpy as np
-from jax import vmap, grad
-import scipy.stats
+from jax import vmap, grad, jit
 
+def get_likelihood(C, E, zs, xs):
+    likelihood = 1
+    for i in range(zs.shape[0]):
+        likelihood *= jax.scipy.stats.norm.pdf(xs[i], loc= C * zs[i], scale=jnp.sqrt(E))
+    return likelihood
 
-def get_likelihood_ratio_gradient(A, B, C, E, zs, xs, num_inputs, N, baseline=False): 
-    log_pdf = lambda z, A, z_prev, B: jax.scipy.stats.norm.logpdf(z, loc=A * z_prev, scale=jnp.sqrt(B))
+@jit
+def logpdf(mu0, V0, A, B, zs):
+    joint_logpdf = jax.scipy.stats.norm.logpdf(zs[0], loc=mu0, scale=jnp.sqrt(V0))
+    for i in range(1, zs.shape[0]):
+        joint_logpdf += jax.scipy.stats.norm.logpdf(zs[i], loc=A * zs[i - 1], scale=jnp.sqrt(B))
+    return joint_logpdf
 
-    A_grad_logpdf = vmap(
-        vmap(fun=grad(log_pdf, 1), in_axes=(0, None, 0, None)),
-        in_axes=(0, None, 0, None)
-    )
-    
-    marg_likelihood = scipy.stats.norm.pdf(xs, loc=C * zs, scale=np.sqrt(E))
+def get_lr_gradients(mu0, V0, A, B, C, E, xs, zs):
+    z_grad_func = vmap(grad(logpdf, argnums=2), in_axes=(None, None, None, None, 1))
+    z_grads = z_grad_func(mu0, V0, A, B, zs)
 
-    if baseline:
-        marg_likelihood = marg_likelihood - marg_likelihood.mean(axis=1)
+    likelihood_func = vmap(get_likelihood, in_axes=(None, None, 1, 1))
+    likelihood = likelihood_func(C, E, zs, xs)
 
-    A_grads = np.zeros((num_inputs, N))
-    A_grads[1:] = A_grad_logpdf(zs[1:], A, zs[:-1], B)
-    lr_gradient = jnp.multiply(A_grads, marg_likelihood)
-
-    return lr_gradient.mean(axis=1)
+    lr_grad = jnp.multiply(z_grads, likelihood)
+    return lr_grad.mean()

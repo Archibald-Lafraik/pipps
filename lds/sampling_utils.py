@@ -26,9 +26,10 @@ def get_z_samples(num_inputs, N, mu_0, V_0, A, B, key=RAND_KEY):
     samples = jrandom.normal(key=key, shape=(num_inputs, N))
     zs = np.zeros((num_inputs, N))
 
-    z0 = mu_0 + samples[0, :] * np.sqrt(V_0)
+    z0 = mu_0 + np.sqrt(V_0) * samples[0]
+
     zs[0] = z0
     for i in range(1, num_inputs):
-        zs[i] = A * zs[i - 1] + samples[i] * np.sqrt(B)
+        zs[i] = A * zs[i - 1] + np.sqrt(B) * samples[i]
     
-    return zs, samples 
+    return zs, samples
