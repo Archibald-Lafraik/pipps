@@ -36,7 +36,8 @@ def rk_step(z, t, dt):
 def get_rk_state_sequence(
     delta_t, mu0, V0, trans_noise,
     obs_noise, num_steps, 
-    N, key=RAND_KEY
+    N, key=RAND_KEY,
+    limit_range=False,
 ):
     states = np.zeros((num_steps, N, 4))
     obs = np.zeros((num_steps, N, 4))
@@ -57,8 +58,14 @@ def get_rk_state_sequence(
     time = jnp.linspace(delta_t, int(delta_t * (num_steps - 1)), num_steps - 1)
     for i, t in enumerate(time):
         step_func = lambda z, t, dt: rk_step(z, t, dt)
-        z = states[i] + vmap(step_func, (0, None, None))(states[i], t, delta_t)
 
+        z = states[i] + vmap(step_func, (0, None, None))(states[i], t, delta_t)
+        
+        # Ensure all angles are between -2pi and 2pi
+        if limit_range:
+            z = z.at[:, 0].set(jnp.arctan2(jnp.sin(z[:, 0]), jnp.cos(z[:, 0])))
+            z = z.at[:, 1].set(jnp.arctan2(jnp.sin(z[:, 1]), jnp.cos(z[:, 1])))
+        
         states[i + 1] = z + epsilons[i + 1] @ L_trans.T
         obs[i + 1] = states[i + 1] + epsilons[i + 1] @ L_obs.T
 
@@ -77,4 +84,3 @@ def get_coordinates(seq):
         ys[i, :, 1] = ys[i, :, 0] - l2 * jnp.cos(seq[i, :, 1])
 
     return xs, ys
-    
