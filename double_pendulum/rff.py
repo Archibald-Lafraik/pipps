@@ -1,4 +1,3 @@
-from tracemalloc import start
 import jax.lax
 import jax.scipy
 import jax.numpy as jnp
@@ -12,17 +11,17 @@ from constants import RAND_KEY
 def sample_features(x, num_features, lengthscale, coef, omega, phi):
     omega = omega / lengthscale
     x = x[:, jnp.newaxis]
-    features = coef * (2 / num_features) ** 0.5 * jnp.cos(omega @ x.T + jnp.tile(phi, (1, x.shape[0])))
+    features = coef * (2 / num_features) ** 0.5 * jnp.cos(omega @ x + phi)
     return features
 
 @jit
 def get_next_state(theta, x, num_features, lengthscale, coef, omega, phi):
     features = sample_features(x, num_features, lengthscale, coef, omega, phi)
-    next_x = features.T @ theta
-    return next_x 
+    next_x = theta.T @ features
+    return jnp.squeeze(next_x)
 
 @jit
-def likelihood(
+def log_likelihood(
     theta, X,
     num_features,
     lengthscale,
@@ -38,19 +37,21 @@ def likelihood(
     L0 = jnp.linalg.cholesky(V0)
     L_trans = jnp.linalg.cholesky(trans_noise)
 
-    z0 = start_state + jnp.sqrt(L0) @ epsilons[0]
-    prob_x = jax.scipy.stats.multivariate_normal.pdf(X[0], mean=z0, cov=obs_noise)
+    z0 = start_state + L0 @ epsilons[0]
+    prob_x = jax.scipy.stats.multivariate_normal.logpdf(
+        X[0], mean=z0, cov=obs_noise
+    )
 
     def body(carry, idx):
         z, prob_xs = carry
-        next_z = get_next_state(
-            theta, z, num_features, lengthscale, coef, omega, phi 
+        next_state = get_next_state(
+            theta, z, num_features, lengthscale, coef, omega[idx], phi[idx]
         )
-        z = next_z + L_trans @ epsilons[idx]
-        prob_xs *= jax.scipy.stats.multivariate_normal.pdf(
+        z = next_state + L_trans @ epsilons[idx]
+        prob_xs += jax.scipy.stats.multivariate_normal.logpdf(
             X[idx], mean=z, cov=obs_noise
         )
-        return (z, prob_xs), None
+        return (z, prob_xs), z
 
     init = (z0, prob_x)
     indices = jnp.arange(1, X.shape[0])
@@ -59,7 +60,7 @@ def likelihood(
     _, prob_xs = carry
     return prob_xs
     
-def marginal_likelihood(
+def elbo(
     theta, X,
     num_features,
     lengthscale, 
@@ -72,8 +73,8 @@ def marginal_likelihood(
     epsilons,
 ):
     marg_likelihood_func = vmap(
-        likelihood,
-        (None, 1, None, None, None, None, None, None, None, 1, 1, 1)
+        log_likelihood,
+        (None, 1, None, None, None, None, None, None, None, 2, 2, 1)
     )
     marg_likelihood = marg_likelihood_func(
         theta, X, num_features, lengthscale, coef, trans_noise,
@@ -94,27 +95,23 @@ def get_z_seq(
     omega, phi,
     epsilons,
 ):
-
     L0 = jnp.linalg.cholesky(V0)
     L_trans = jnp.linalg.cholesky(trans_noise)
 
-    z0 = start_state + epsilons[0] @ jnp.sqrt(L0)
+    zs = jnp.zeros_like(epsilons)
+    z = start_state + L0 @ epsilons[0]
+    zs = zs.at[0].set(z)
 
-    def body(z, idx):
-        next_z = get_next_state(
-            theta, z, num_features, lengthscale, coef, omega, phi
+    for i in range(1, epsilons.shape[0]):
+        pred_state = get_next_state(
+            theta, z, num_features, lengthscale, coef, omega[i], phi[i] 
         )
-        z = next_z + epsilons[idx] @ L_trans
-        return z, z
+        z = pred_state + L_trans @ epsilons[i]
+        zs = zs.at[i].set(z)
 
-    init = z0
-    indices = jnp.arange(1, epsilons.shape[0])
-    _, zs = jax.lax.scan(body, init, indices)
-
-    return zs, epsilons
+    return zs
 
 def get_zs(
-    num_steps, N,
     theta,
     num_features,
     lengthscale,
@@ -127,7 +124,7 @@ def get_zs(
 ):
     zs_func = vmap(
         get_z_seq,
-        in_axes=(None, None, None, None, None, None, None, 1, 1, 1),
+        in_axes=(None, None, None, None, None, None, None, 2, 2, 1),
         out_axes=1,
     )
     zs = zs_func(

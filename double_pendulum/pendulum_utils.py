@@ -23,12 +23,19 @@ def get_G(z, t):
 
     return jnp.array([v1, v2, acc1, acc2])
 
+
+def simple_G(z, t): 
+    t, v = z
+    acc = - (g / l1) * jnp.sin(t)
+
+    return jnp.array([v, acc])
+
 @jit
 def rk_step(z, t, dt):
-    k1 = get_G(z, t)
-    k2 = get_G(z + 0.5 * k1 * dt, t + 0.5 * dt)
-    k3 = get_G(z + 0.5 * k2 * dt, t + 0.5 * dt)
-    k4 = get_G(z + k3 * dt, t+dt)
+    k1 = simple_G(z, t)
+    k2 = simple_G(z + 0.5 * k1 * dt, t + 0.5 * dt)
+    k3 = simple_G(z + 0.5 * k2 * dt, t + 0.5 * dt)
+    k4 = simple_G(z + k3 * dt, t+dt)
 
     return dt * (k1 + 2 * k2 + 2 * k3 + k4) /6
 
@@ -37,16 +44,16 @@ def get_rk_state_sequence(
     delta_t, mu0, V0, trans_noise,
     obs_noise, num_steps, 
     N, key=RAND_KEY,
-    limit_range=False,
 ):
-    states = np.zeros((num_steps, N, 4))
-    obs = np.zeros((num_steps, N, 4))
+    state_dim = mu0.shape[0]
+    states = np.zeros((num_steps, N, state_dim))
+    obs = np.zeros((num_steps, N, state_dim))
     
     L0 = jnp.linalg.cholesky(V0)
     L_trans = jnp.linalg.cholesky(trans_noise)
     L_obs = jnp.linalg.cholesky(obs_noise)
 
-    epsilons = jrandom.normal(key=key, shape=(num_steps, N, 4))
+    epsilons = jrandom.normal(key=key, shape=(num_steps, N, state_dim))
 
     z0 = np.tile(mu0, (N, 1)) + epsilons[0] @ L0.T
     x0 = z0 + epsilons[0] @ L_obs.T
@@ -59,12 +66,7 @@ def get_rk_state_sequence(
     for i, t in enumerate(time):
         step_func = lambda z, t, dt: rk_step(z, t, dt)
 
-        z = states[i] + vmap(step_func, (0, None, None))(states[i], t, delta_t)
-        
-        # Ensure all angles are between -2pi and 2pi
-        if limit_range:
-            z = z.at[:, 0].set(jnp.arctan2(jnp.sin(z[:, 0]), jnp.cos(z[:, 0])))
-            z = z.at[:, 1].set(jnp.arctan2(jnp.sin(z[:, 1]), jnp.cos(z[:, 1])))
+        z = states[i] + vmap(step_func, (0, None, None))(states[i], t, delta_t) 
         
         states[i + 1] = z + epsilons[i + 1] @ L_trans.T
         obs[i + 1] = states[i + 1] + epsilons[i + 1] @ L_obs.T
@@ -83,4 +85,14 @@ def get_coordinates(seq):
         ys[i, :, 0] = -l1 * jnp.cos(seq[i, :, 0])
         ys[i, :, 1] = ys[i, :, 0] - l2 * jnp.cos(seq[i, :, 1])
 
+    return xs, ys
+
+def get_simple_coordinates(seq):
+    s = seq.shape
+    xs = np.zeros((s[0], s[1]))
+    ys = np.zeros((s[0], s[1]))
+    for i in range(s[0]):
+        xs[i, :] = l1 * jnp.sin(seq[i, :, 0])
+        ys[i, :] = -l1 * jnp.cos(seq[i, :, 0])
+        
     return xs, ys

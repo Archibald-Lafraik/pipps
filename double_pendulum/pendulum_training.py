@@ -3,9 +3,11 @@ import jax.numpy as jnp
 import jax.random as jrandom
 import numpy as np
 
+import matplotlib.pyplot as plt
+
 from constants import RAND_KEY
 from rff_gradients import lr_gradients, rp_gradients
-from rff import get_zs, marginal_likelihood
+from rff import get_zs, elbo
 
 def step(
     params,
@@ -21,15 +23,15 @@ def step(
     xs,
     num_steps,
     N,
-    key
+    key,
+    step
 ):
-    epsilons = jrandom.normal(key=key, shape=(num_features, N, 4))
-    omegas = jrandom.normal(key=key, shape=(num_features, N, 1))
-    phis = jrandom.uniform(key=key, minval=0, maxval=2 * jnp.pi, shape=(num_features, N, 1))
+    subkey = jrandom.split(key, num=3)
+    epsilons = jrandom.normal(key=subkey[0], shape=(num_steps, N, xs.shape[-1]))
+    omegas = jrandom.normal(key=subkey[1], shape=(num_steps, num_features, N, xs.shape[-1]))
+    phis = jrandom.uniform(key=subkey[2], minval=0, maxval=2 * jnp.pi, shape=(num_steps, num_features, N, 1))
     
     zs = get_zs(
-        num_steps=num_steps,
-        N=N,
         theta=params[0],
         num_features=num_features,
         lengthscale=lengthscale,
@@ -43,7 +45,7 @@ def step(
     if lr_estimator:
         grads = lr_gradients(
             params[0], xs, num_features, lengthscale, coef, trans_noise,
-            obs_noise, start_state, V0, omegas, phis, zs
+            obs_noise, start_state, V0, omegas, phis, zs, epsilons
         )
     else:
         grads = rp_gradients(
@@ -51,7 +53,7 @@ def step(
             obs_noise, start_state, V0, omegas, phis, epsilons
         )
 
-    objective_value = marginal_likelihood(
+    objective_value = elbo(
         params[0], xs, num_features, lengthscale, coef, trans_noise,
         obs_noise, start_state, V0, omegas, phis, epsilons
     )
@@ -78,7 +80,7 @@ def fit(
 ):
     opt_state = optimizer.init(params)
     training_objectives = np.zeros((training_steps,))
-    grad_values = np.zeros((training_steps, 4))
+    grad_values = np.zeros((training_steps, num_features, xs.shape[-1]))
  
     for i in range(training_steps):
         key, subkey = jrandom.split(key)
@@ -95,7 +97,8 @@ def fit(
             obs_noise=obs_noise, xs=xs,
             num_steps=num_steps,
             N=N,
-            key=subkey
+            key=subkey,
+            step=i
         )
         training_objectives[i] = objective_value
         grad_values[i] = grads
