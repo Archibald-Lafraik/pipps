@@ -1,8 +1,9 @@
 import numpy as np
+import random
 from collections import deque, namedtuple
 
 Transition = namedtuple('Transition',
-                        ('state', 'action', 'next_state', 'reward')
+                        ('state', 'action', 'next_state')
                     )    
 
 class ReplayBuffer:
@@ -23,6 +24,7 @@ class ReplayBuffer:
     def get_train_test_arrays(self, train_only=True, train_test_split=0.8):
         mem_size = len(self.memory)
         train_size = int(mem_size * train_test_split)
+        random.shuffle(self.memory)
 
         states = np.array(list(map(lambda t: t.state, self.memory)))
         actions = np.array(list(map(lambda t: t.action, self.memory)))
