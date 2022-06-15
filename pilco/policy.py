@@ -48,16 +48,14 @@ def trajectory_value(
     noise,
     state_epsilons,
     trans_epsilons,
-    omegas,
-    phis,
+    omega,
+    phi,
 ):
 
     def body(carry, t):
         prev_state, cost = carry
         state_eps = state_epsilons[t]
         trans_eps = trans_epsilons[t]
-        omega = omegas[t]
-        phi = phis[t]
 
         action = linear_policy(prev_state, theta)
         model_input = jnp.stack([prev_state, jnp.full((4,), action)]).T
@@ -65,12 +63,11 @@ def trajectory_value(
         input = phi_X_batch(model_input, num_features, lengthscales, coefs, omega, phi)
     
         means = jnp.concatenate([model_d1[0], model_d2[0], model_d3[0], model_d4[0]])
-        covs = jnp.diag(jnp.concatenate([
-            jnp.diag(model_d1[1]),
-            jnp.diag(model_d2[1]),
-            jnp.diag(model_d3[1]),
-            jnp.diag(model_d4[1])
-        ]))
+        covs = jnp.zeros((means.shape[0], means.shape[0]))
+        covs = covs.at[:1000, :1000].set(model_d1[1])
+        covs = covs.at[1000:1000 * 2, 1000:1000 * 2].set(model_d2[1])
+        covs = covs.at[1000 * 2:1000 * 3, 1000 * 2:1000 * 3].set(model_d3[1])
+        covs = covs.at[1000 * 3:1000 * 4, 1000 * 3:1000 * 4].set(model_d4[1])
         d1, d2, d3, d4 = predict(means, covs, beta, input.reshape(-1), trans_eps)
 
 
@@ -110,19 +107,13 @@ def policy_grad(
     time_steps = jnp.arange(horizon - 1)
 
     grads_func = vmap(
-            vmap(
                 jacobian(trajectory_value, 0),
                 # trajectory_value,
                 in_axes=(
                     None, None, 0, None, None, None, None, None,
-                    None, None, None, None, 0, None, 0, 0
+                    None, None, None, None, 0, 0, 0, 0
                 )
-            ),
-            in_axes=(
-                None, None, None, None, None, None, None, None,
-                None, None, None, None, None, 0, None, None,
             )
-    )
 
     grads = grads_func(
         theta,
@@ -141,7 +132,7 @@ def policy_grad(
         phis,
     )
 
-    return grads.mean(axis=(1, 0)) 
+    return grads.mean(axis=0) 
  
 
 ################################### LIKELIHOOD RATIO GRADIENTS #################################
@@ -160,14 +151,12 @@ def logpdf(
     time_steps,
     zs,
     trans_epsilons,
-    omegas,
-    phis
+    omega,
+    phi
 ):
     
     def body(prob, t):
         trans_eps = trans_epsilons[t - 1]
-        omega = omegas[t - 1]
-        phi = phis[t - 1]
 
         action = linear_policy(zs[t - 1], theta)
         model_input = jnp.stack([zs[t - 1], jnp.full((4,), action)]).T
@@ -175,21 +164,20 @@ def logpdf(
         input = phi_X_batch(model_input, num_features, lengthscales, coefs, omega, phi)
     
         means = jnp.concatenate([model_d1[0], model_d2[0], model_d3[0], model_d4[0]])
-        covs = jnp.diag(jnp.concatenate([
-            jnp.diag(model_d1[1]),
-            jnp.diag(model_d2[1]),
-            jnp.diag(model_d3[1]),
-            jnp.diag(model_d4[1])
-        ]))
-        d1, d2, d3, d4 = predict(means, covs, beta, input.reshape(-1), trans_eps)
+        covs = jnp.zeros((means.shape[0], means.shape[0]))
+        covs = covs.at[:1000, :1000].set(model_d1[1])
+        covs = covs.at[1000:1000 * 2, 1000:1000 * 2].set(model_d2[1])
+        covs = covs.at[1000 * 2:1000 * 3, 1000 * 2:1000 * 3].set(model_d3[1])
+        covs = covs.at[1000 * 3:1000 * 4, 1000 * 3:1000 * 4].set(model_d4[1])
 
+        d1, d2, d3, d4 = predict(means, covs, beta, input.reshape(-1), trans_eps)
 
         next_mean = jnp.array([d1, d2, d3, d4]) + zs[t - 1]
 
         prob += jax.scipy.stats.multivariate_normal.logpdf(
             zs[t],
             mean=next_mean,
-            cov=jnp.eye(4) * (noise ** 2),
+            cov= jnp.power(noise, 2) * jnp.eye(4),
         )
 
         return prob, None
@@ -223,19 +211,13 @@ def lr_gradients(
 ):
     time_steps = jnp.arange(1, horizon)
     grad_func = vmap(
-            vmap(
                 jacobian(logpdf, 0),
+                # logpdf,
                 (
                     None, None, None, None, None, None, None, 
-                    None, None, None, None, 0, None, 0, 0
+                    None, None, None, None, 0, 0, 0, 0
                 )
-            ),
-            (
-                None, None, None, None, None, None, None, 
-                None, None, None, None, 0, 0, None, None
             )
-
-    )
     logpdf_grads = grad_func(
         theta,
         beta,
@@ -252,9 +234,8 @@ def lr_gradients(
         phis,
     )
 
-    rewards = vmap(vmap(get_sequence_rewards, (0,)), (0,))(zs)
+    rewards = vmap(get_sequence_rewards, (0,))(zs)
+    lr_grads = logpdf_grads * rewards[:, jnp.newaxis]
 
-    lr_grads = logpdf_grads * rewards[:, :, jnp.newaxis]
-
-    return lr_grads.mean(axis=(1, 0))
+    return lr_grads.mean(axis=0)
 

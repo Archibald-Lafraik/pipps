@@ -28,18 +28,12 @@ def get_trajectories(
     start_states = jnp.zeros((state_epsilons.shape[0], 4))
     time_steps = jnp.arange(horizon - 1)
     traj_func = vmap(
-            vmap(
                 get_trajectory,
                 (
                     None, None, 0, None, None, None, None, None,
-                    None, None, None, None, 0, None, 0, 0
+                    None, None, None, None, 0, 0, 0, 0
                 )
-            ),
-            in_axes=(
-                None, None, None, None, None, None, None, 
-                None, None, None, None, None, None, 0, None, None
-            ) 
-    )
+            )
 
     trajectories = traj_func(
         theta,
@@ -74,15 +68,15 @@ def get_trajectory(
     noise,
     state_epsilons,
     trans_epsilons,
-    omegas,
-    phis,
+    omega,
+    phi,
 ):
 
     def body(prev_state, t):
         state_eps = state_epsilons[t]
         trans_eps = trans_epsilons[t]
-        omega = omegas[t]
-        phi = phis[t]
+        # omega = omegas[t]
+        # phi = phis[t]
 
         action = linear_policy(prev_state, theta)
         model_input = jnp.stack([prev_state, jnp.full((4,), action)]).T
