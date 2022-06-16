@@ -1,28 +1,26 @@
 import jax.lax
 from jax import vmap, jit
 import numpy as np
+import jax.random as jrandom
 import jax.numpy as jnp
 
 from trans_model import predict
-from policy import linear_policy
+from policy import linear_policy, nonlinear_policy
 from rff import phi_X_batch
+from rbf import rbf_policy
+from neural_nets import nn_policy
 
 
 def get_trajectories(
     theta,
-    beta,
+    betas,
     env,
     model_d1, model_d2,
     model_d3, model_d4,
     horizon,
-    num_features,
-    lengthscales,
-    coefs,
     noise,
     state_epsilons,
     trans_epsilons,
-    omegas,
-    phis,
 ):
     # start_states = jnp.array([env.reset() for _ in range(state_epsilons.shape[0])])
     start_states = jnp.zeros((state_epsilons.shape[0], 4))
@@ -30,26 +28,21 @@ def get_trajectories(
     traj_func = vmap(
                 get_trajectory,
                 (
-                    None, None, 0, None, None, None, None, None,
-                    None, None, None, None, 0, 0, 0, 0
+                    None, None, 0, None, None, None,
+                    None, None, None, 0, 0
                 )
             )
 
     trajectories = traj_func(
         theta,
-        beta,
+        betas,
         start_states,
         model_d1, model_d2,
         model_d3, model_d4,
         time_steps,
-        num_features,
-        lengthscales,
-        coefs,
         noise,
         state_epsilons,
         trans_epsilons,
-        omegas,
-        phis,
     )
 
     return trajectories
@@ -57,40 +50,27 @@ def get_trajectories(
 @jit
 def get_trajectory(
     theta,
-    beta,
+    betas,
     start_state,
     model_d1, model_d2,
     model_d3, model_d4,
     time_steps,
-    num_features,
-    lengthscales,
-    coefs,
     noise,
     state_epsilons,
     trans_epsilons,
-    omega,
-    phi,
 ):
 
     def body(prev_state, t):
         state_eps = state_epsilons[t]
         trans_eps = trans_epsilons[t]
-        # omega = omegas[t]
-        # phi = phis[t]
 
-        action = linear_policy(prev_state, theta)
-        model_input = jnp.stack([prev_state, jnp.full((4,), action)]).T
-
-        input = phi_X_batch(model_input, num_features, lengthscales, coefs, omega, phi)
-    
-        means = jnp.concatenate([model_d1[0], model_d2[0], model_d3[0], model_d4[0]])
-        covs = jnp.diag(jnp.concatenate([
-            jnp.diag(model_d1[1]),
-            jnp.diag(model_d2[1]),
-            jnp.diag(model_d3[1]),
-            jnp.diag(model_d4[1])
-        ]))
-        d1, d2, d3, d4 = predict(means, covs, beta, input.reshape(-1), trans_eps)
+        action = nonlinear_policy(prev_state, theta)
+        model_input = jnp.stack([prev_state, jnp.full((4,), action), jnp.ones((4,))]).T
+        
+        d1 = predict(*model_d1, betas[0], model_input[0], trans_eps[0])
+        d2 = predict(*model_d2, betas[1], model_input[1], trans_eps[1])
+        d3 = predict(*model_d3, betas[2], model_input[2], trans_eps[2])
+        d4 = predict(*model_d4, betas[3], model_input[3], trans_eps[3])
 
         next_mean = jnp.array([d1, d2, d3, d4]) + prev_state
         next_state = next_mean + state_eps * noise
@@ -104,14 +84,14 @@ def get_trajectory(
     return states
 
 
-def rollout_episode(env, horizon, replay_buffer, theta):
+def rollout_episode(env, horizon, replay_buffer, weights):
     cur_state = env.reset()
     done = False
     
     reward = 0
     for t in range(horizon):
         prev_state = cur_state
-        action = linear_policy(prev_state, theta)
+        action = nn_policy(prev_state, weights)
         action = np.array([action])
 
         cur_state, _, done, _ = env.step(action)

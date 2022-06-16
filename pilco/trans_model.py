@@ -42,23 +42,20 @@ def predict_batch(mean, cov, beta, phi_Xstar, eps):
     return sample
 
 
-def train_transition_models(replay_buffer, betas, trans_models, num_features, lengthscales, coefs, key):
-    omega = jrandom.normal(key=key, shape=(num_features, 2))
-    phi = jrandom.uniform(key=key, minval=0, maxval=2 * jnp.pi, shape=(num_features, 1))
-
+def train_transition_models(replay_buffer, betas, trans_models, num_features):
     X, y = replay_buffer.get_train_test_arrays()
 
-    X_d1 = X[:, :2, jnp.newaxis]
-    X_d2 = X[:, 2:4, jnp.newaxis]
-    X_d3 = X[:, 4:6, jnp.newaxis]
-    X_d4 = X[:, 6:8, jnp.newaxis]
+    X_d1 = X[:, 0]
+    X_d2 = X[:, 1]
+    X_d3 = X[:, 2]
+    X_d4 = X[:, 3]
     y_d1 = y[:, 0]
     y_d2 = y[:, 1]
     y_d3 = y[:, 2]
     y_d4 = y[:, 3]
 
     model_d1, model_d2, model_d3, model_d4 = rff_posterior(
-        num_features, lengthscales, coefs, omega, phi, betas,
+        betas,
         X_d1, X_d2, X_d3, X_d4, y_d1, y_d2, y_d3, y_d4,
         *trans_models
     ) 
@@ -67,11 +64,6 @@ def train_transition_models(replay_buffer, betas, trans_models, num_features, le
 
 @jit
 def rff_posterior(
-    num_features,
-    lengthscales,
-    coefs,
-    omega,
-    phi,
     betas,
     X_d1, X_d2,
     X_d3, X_d4,
@@ -80,15 +72,10 @@ def rff_posterior(
     model_d1, model_d2,
     model_d3, model_d4
 ):
-    phi_X_d1 = phi_X_batch(X_d1, num_features, lengthscales[0], coefs[0], omega, phi).T
-    phi_X_d2 = phi_X_batch(X_d2, num_features, lengthscales[1], coefs[1], omega, phi).T
-    phi_X_d3 = phi_X_batch(X_d3, num_features, lengthscales[2], coefs[2], omega, phi).T
-    phi_X_d4 = phi_X_batch(X_d4, num_features, lengthscales[3], coefs[3], omega, phi).T
- 
-    model_d1 = posterior(*model_d1, betas[0], phi_X_d1, y_d1)
-    model_d2 = posterior(*model_d2, betas[1], phi_X_d2, y_d2)
-    model_d3 = posterior(*model_d3, betas[2], phi_X_d3, y_d3)
-    model_d4 = posterior(*model_d4, betas[3], phi_X_d4, y_d4)
+    model_d1 = posterior(*model_d1, betas[0], X_d1, y_d1)
+    model_d2 = posterior(*model_d2, betas[1], X_d2, y_d2)
+    model_d3 = posterior(*model_d3, betas[2], X_d3, y_d3)
+    model_d4 = posterior(*model_d4, betas[3], X_d4, y_d4)
 
     return model_d1, model_d2, model_d3, model_d4
 
@@ -116,18 +103,24 @@ def likelihood(
 
         model_input = jnp.stack([start_states[idx], jnp.full((4,), actions[idx])]).T
 
-        in_d1 = phi_X(model_input[0, jnp.newaxis], num_features, lengthscales[0], coefs[0], omega, phi)
-        in_d2 = phi_X(model_input[1, jnp.newaxis], num_features, lengthscales[1], coefs[1], omega, phi)
-        in_d3 = phi_X(model_input[2, jnp.newaxis], num_features, lengthscales[2], coefs[2], omega, phi)
-        in_d4 = phi_X(model_input[3, jnp.newaxis], num_features, lengthscales[3], coefs[3], omega, phi)
+        # in_d1 = phi_X(model_input[0, jnp.newaxis], num_features, lengthscales[0], coefs[0], omega, phi)
+        # in_d2 = phi_X(model_input[1, jnp.newaxis], num_features, lengthscales[1], coefs[1], omega, phi)
+        # in_d3 = phi_X(model_input[2, jnp.newaxis], num_features, lengthscales[2], coefs[2], omega, phi)
+        # in_d4 = phi_X(model_input[3, jnp.newaxis], num_features, lengthscales[3], coefs[3], omega, phi)
 
         means = jnp.concatenate([m_d1[0], m_d2[0], m_d3[0], m_d4[0]])
+        # covs = jnp.zeros((means.shape[0], means.shape[0]))
+        # covs = covs.at[:1000, :1000].set(m_d1[1])
+        # covs = covs.at[1000:1000 * 2, 1000:1000 * 2].set(m_d2[1])
+        # covs = covs.at[1000 * 2:1000 * 3, 1000 * 2:1000 * 3].set(m_d3[1])
+        # covs = covs.at[1000 * 3:1000 * 4, 1000 * 3:1000 * 4].set(m_d4[1])
+        # d1, d2, d3, d4 = predict(means, covs, betas, jnp.concatenate([in_d1, in_d2, in_d3, in_d4]), trans_eps)
         covs = jnp.zeros((means.shape[0], means.shape[0]))
-        covs = covs.at[:1000, :1000].set(m_d1[1])
-        covs = covs.at[1000:1000 * 2, 1000:1000 * 2].set(m_d2[1])
-        covs = covs.at[1000 * 2:1000 * 3, 1000 * 2:1000 * 3].set(m_d3[1])
-        covs = covs.at[1000 * 3:1000 * 4, 1000 * 3:1000 * 4].set(m_d4[1])
-        d1, d2, d3, d4 = predict(means, covs, betas, jnp.concatenate([in_d1, in_d2, in_d3, in_d4]), trans_eps)
+        covs = covs.at[:, :2].set(m_d1[1])
+        covs = covs.at[2:2 * 2, 2:2 * 2].set(m_d2[1])
+        covs = covs.at[2 * 2:2 * 3, 2 * 2:2 * 3].set(m_d3[1])
+        covs = covs.at[2 * 3:2 * 4, 2 * 3:2 * 4].set(m_d4[1])
+        d1, d2, d3, d4 = predict(means, covs, betas, model_input, trans_eps)
 
         next_mean = jnp.array([d1, d2, d3, d4]) + start_states[idx]
         prob += jax.scipy.stats.multivariate_normal.logpdf(

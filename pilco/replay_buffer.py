@@ -26,11 +26,12 @@ class ReplayBuffer:
         states = np.array(list(map(lambda t: t.state, self.memory)))
         actions = np.array(list(map(lambda t: t.action, self.memory)))
         next_states = np.array(list(map(lambda t: t.next_state, self.memory)))
-
-        inputs = np.zeros((mem_size, states.shape[1] * 2))
+        
+        inputs = np.zeros((mem_size, states.shape[1], 3))
         for i in range(states.shape[1]):
-            inputs[:, i] = states[:, i]
-            inputs[:, i + 1] = actions
+            inputs[:, i, 0] = states[:, i]
+            inputs[:, i, 1] = actions
+            inputs[:, i, 2] = 1.
 
         if not train_only:
             train_X = inputs[:train_size]

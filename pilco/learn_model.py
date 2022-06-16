@@ -11,8 +11,8 @@ def train_transition_models(X, y, beta, model, num_features, lengthscales, coefs
     omega = jrandom.normal(key=key, shape=(num_features, 1))
     phi = jrandom.uniform(key=key, minval=0, maxval=2 * jnp.pi, shape=(num_features, 1))
 
-    y = y - X
-    X = X[:, jnp.newaxis]
+    y = y - X[:, 1]
+    # X = X[:, jnp.newaxis]
     model = rff_posterior(
         num_features, lengthscales, coefs, omega, phi, beta, X, y, model
     ) 
@@ -30,8 +30,8 @@ def rff_posterior(
     X, y,
     model
 ):
-    phi_X = phi_X_batch(X, num_features, lengthscales, coefs, omega, phi).T
-    # phi_X = X
+    # phi_X = phi_X_batch(X, num_features, lengthscales, coefs, omega, phi).T
+    phi_X = X
 
     model = posterior(*model, beta, phi_X, y)
 
@@ -49,11 +49,12 @@ def pred(
     beta,
     model_noise
 ):
-    input = phi_X(start_state, num_features, lengthscales, coefs, omega, phi)
-    # input = start_state
+    # input = phi_X(start_state, num_features, lengthscales, coefs, omega, phi)
+    input = start_state
 
     diff = predict(*model, beta, input, trans_eps)
-    next_mean = diff + start_state
+    # next_mean = diff + start_state
+    next_mean = diff + start_state[1]
     next_state = next_mean + state_eps * model_noise
     return next_state
 
@@ -98,11 +99,13 @@ def get_likelihood(
     model_noise
 ):
     def body(prob, idx):
-        start_state = jnp.array([start_states[idx]])
+        # start_state = jnp.array([start_states[idx]])
+        start_state = start_states[idx]
         trans_eps = trans_epsilons[idx]
 
 
-        input = phi_X(start_state, num_features, lengthscales, coefs, omega, phi)
+        # input = phi_X(start_state, num_features, lengthscales, coefs, omega, phi)
+        input = start_state
         diff = predict(*model, beta, input, trans_eps)
         next_mean = (diff + start_state).squeeze()
         prob += jax.scipy.stats.norm.logpdf(
