@@ -176,3 +176,53 @@ def marginal_likelihood(
     )
 
     return lkhds.mean(axis=0)
+
+
+
+
+@jit
+def pred2(
+    start_state,
+    trans_eps, state_eps,
+    omega, phi,
+    model,
+    num_features,
+    lengthscales,
+    coefs,
+    beta,
+    model_noise
+):
+    L = jnp.linalg.cholesky(model[1])
+    sample_weight = model[0] + L @ trans_eps[0]
+
+    diff = sample_weight @ start_state
+
+    next_mean = diff + start_state[1]
+    next_state = next_mean + state_eps * (beta ** -0.5)
+
+    return next_state
+
+def state_prediction2(
+    start_state,
+    model,
+    model_noise,
+    num_features,
+    lengthscales,
+    coefs,
+    beta,
+    N,
+    key
+):
+    keys = jrandom.split(key, num=4)
+    state_eps = jrandom.normal(keys[0], shape=(N, 1))
+    trans_eps = jrandom.normal(keys[1], shape=(N, 1, 2))
+    omega = jrandom.normal(keys[2], shape=(num_features, 1))
+    phi = jrandom.uniform(keys[3], minval=0, maxval=2 * jnp.pi, shape=(num_features, 1))
+
+    foo = vmap(pred2, (None, 0, 0, None, None, None, None, None, None, None, None))
+    predictions = foo(
+        start_state, trans_eps, state_eps, omega, phi, model, num_features,
+        lengthscales, coefs, beta, model_noise
+    )
+
+    return predictions

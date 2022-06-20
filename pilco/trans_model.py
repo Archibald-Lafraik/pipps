@@ -23,13 +23,31 @@ def posterior(mean, cov_inv, beta, phiX, y):
     return mean, cov
 
 @jit
+def trans_output(w_d1, w_d2, w_d3, w_d4, x):
+    d1 = w_d1 @ x[0]
+    d2 = w_d2 @ x[1]
+    d3 = w_d3 @ x[2]
+    d4 = w_d4 @ x[3]
+    return jnp.stack([d1, d2, d3, d4])
+
+@jit
 def predict(mean, cov, beta, phi_Xstar, eps):
     y_pred_mean = phi_Xstar @ mean
+    # print(f"Old technique: {y_pred_mean}")
     y_pred_var = 1 / beta + phi_Xstar @ cov @ phi_Xstar.T
     
     sample = y_pred_mean + eps * jnp.sqrt(y_pred_var)
     
     return sample
+
+@jit
+def predict_params(mean, cov, beta, phi_Xstar, eps):
+    y_pred_mean = phi_Xstar @ mean
+    y_pred_var = 1 / beta + phi_Xstar @ cov @ phi_Xstar.T
+    
+    sample = y_pred_mean + eps * jnp.sqrt(y_pred_var)
+    
+    return y_pred_mean, y_pred_var, sample
 
 @jit
 def predict_batch(mean, cov, beta, phi_Xstar, eps):

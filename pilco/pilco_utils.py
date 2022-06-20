@@ -1,13 +1,9 @@
 import jax.lax
 from jax import vmap, jit
 import numpy as np
-import jax.random as jrandom
 import jax.numpy as jnp
 
-from trans_model import predict
-from policy import linear_policy, nonlinear_policy
-from rff import phi_X_batch
-from rbf import rbf_policy
+from trans_model import trans_output
 from neural_nets import nn_policy
 
 
@@ -18,7 +14,6 @@ def get_trajectories(
     model_d1, model_d2,
     model_d3, model_d4,
     horizon,
-    noise,
     state_epsilons,
     trans_epsilons,
 ):
@@ -28,7 +23,7 @@ def get_trajectories(
     traj_func = vmap(
                 get_trajectory,
                 (
-                    None, None, 0, None, None, None,
+                    None, None, 0, None, None,
                     None, None, None, 0, 0
                 )
             )
@@ -40,7 +35,6 @@ def get_trajectories(
         model_d1, model_d2,
         model_d3, model_d4,
         time_steps,
-        noise,
         state_epsilons,
         trans_epsilons,
     )
@@ -55,7 +49,6 @@ def get_trajectory(
     model_d1, model_d2,
     model_d3, model_d4,
     time_steps,
-    noise,
     state_epsilons,
     trans_epsilons,
 ):
@@ -64,22 +57,31 @@ def get_trajectory(
         state_eps = state_epsilons[t]
         trans_eps = trans_epsilons[t]
 
-        action = nonlinear_policy(prev_state, theta)
+        action = nn_policy(prev_state, theta)
         model_input = jnp.stack([prev_state, jnp.full((4,), action), jnp.ones((4,))]).T
         
-        d1 = predict(*model_d1, betas[0], model_input[0], trans_eps[0])
-        d2 = predict(*model_d2, betas[1], model_input[1], trans_eps[1])
-        d3 = predict(*model_d3, betas[2], model_input[2], trans_eps[2])
-        d4 = predict(*model_d4, betas[3], model_input[3], trans_eps[3])
+        L1 = jnp.linalg.cholesky(model_d1[1])
+        L2 = jnp.linalg.cholesky(model_d2[1])
+        L3 = jnp.linalg.cholesky(model_d3[1])
+        L4 = jnp.linalg.cholesky(model_d4[1])
 
-        next_mean = jnp.array([d1, d2, d3, d4]) + prev_state
-        next_state = next_mean + state_eps * noise
+        w_d1 = model_d1[0] + L1 @ trans_eps[0]
+        w_d2 = model_d2[0] + L2 @ trans_eps[1]
+        w_d3 = model_d3[0] + L3 @ trans_eps[2]
+        w_d4 = model_d4[0] + L4 @ trans_eps[3]
+        
+        state_diff = trans_output(w_d1, w_d2, w_d3, w_d4, model_input)
+
+        next_mean = state_diff + prev_state
+        next_state = next_mean + state_eps * (betas ** -0.5)
 
         return next_state, next_state
 
+    _, next_states = jax.lax.scan(body, start_state, time_steps)
     states = jnp.zeros_like(state_epsilons)
+
     states = states.at[0].set(start_state)
-    states = states.at[1:].set(jax.lax.scan(body, start_state, time_steps)[1])
+    states = states.at[1:].set(next_states)
 
     return states
 

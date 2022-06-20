@@ -3,9 +3,10 @@ import numpy as np
 import jax.lax
 import jax.scipy
 import jax.random as jrandom
+from functools import partial
 from jax import vmap, jit, jacobian, grad
 
-from trans_model import predict
+from trans_model import predict, predict_params, trans_output
 from rff import phi_X_batch
 from rbf import rbf_policy
 from neural_nets import nn_policy
@@ -17,24 +18,6 @@ def cost_function(state):
     diff = state_val - target
     width = 1.
     return 1 - jnp.exp(- ((diff[0] ** 2 + diff[1] ** 2 + diff[2] ** 2) / width) ** 2)
-
-
-def linear_policy(state, theta):
-    vec = jnp.array([1, *state])
-    return jnp.clip(vec.T @ theta, -1., 1.)
-
-def nonlinear_policy(state, theta):
-    vec = jnp.array([
-        1.,
-        *state,
-        *jnp.power(state, 2),
-        # *jnp.power(state, 3),
-        # *jnp.power(state, 4)
-        *jnp.sin(state),
-        # *jnp.sin(state - jnp.pi / 4),
-        # *jnp.sin(state + jnp.pi / 4)
-    ])
-    return jnp.clip(vec.T @ theta, -1., 1.)
 
 
 def evaluate_policy(theta, beta, trans_models, env, N, horizon, key):
@@ -57,7 +40,6 @@ def trajectory_value(
     model_d1,model_d2,
     model_d3, model_d4,
     time_steps,
-    noise,
     state_epsilons,
     trans_epsilons,
 ):
@@ -69,14 +51,21 @@ def trajectory_value(
 
         action = nn_policy(prev_state, params)
         model_input = jnp.stack([prev_state, jnp.full((4,), action), jnp.ones((4,))]).T
-        
-        d1 = predict(*model_d1, betas[0], model_input[0], trans_eps[0])
-        d2 = predict(*model_d2, betas[1], model_input[1], trans_eps[1])
-        d3 = predict(*model_d3, betas[2], model_input[2], trans_eps[2])
-        d4 = predict(*model_d4, betas[3], model_input[3], trans_eps[3])
 
-        next_mean = jnp.array([d1, d2, d3, d4]) + prev_state
-        next_state = next_mean + state_eps * noise
+        L1 = jnp.linalg.cholesky(model_d1[1])
+        L2 = jnp.linalg.cholesky(model_d2[1])
+        L3 = jnp.linalg.cholesky(model_d3[1])
+        L4 = jnp.linalg.cholesky(model_d4[1])
+
+        w_d1 = model_d1[0] + L1 @ trans_eps[0]
+        w_d2 = model_d2[0] + L2 @ trans_eps[1]
+        w_d3 = model_d3[0] + L3 @ trans_eps[2]
+        w_d4 = model_d4[0] + L4 @ trans_eps[3]
+        
+        state_diff = trans_output(w_d1, w_d2, w_d3, w_d4, model_input)
+
+        next_mean = state_diff + prev_state
+        next_state = next_mean + state_eps * (betas ** -0.5)
 
         cost += cost_function(next_state)
 
@@ -84,9 +73,60 @@ def trajectory_value(
 
     init = (start_state, cost_function(start_state))
     carry, states = jax.lax.scan(body, init, time_steps)
+
     cost = carry[1]
 
     return cost
+
+def trajectory_value2(
+    params,
+    betas, 
+    start_state,
+    model_d1,model_d2,
+    model_d3, model_d4,
+    time_steps,
+    env,
+    state_epsilons,
+    trans_epsilons,
+):
+
+    carry = (start_state, cost_function(start_state))
+    the_states = []
+    the_true_states = []
+    for t in time_steps:
+        prev_state, cost = carry
+        state_eps = state_epsilons[t]
+        trans_eps = trans_epsilons[t]
+
+        action = nn_policy(prev_state, params)
+        model_input = jnp.stack([prev_state, jnp.full((4,), action), jnp.ones((4,))]).T
+
+        L1 = jnp.linalg.cholesky(model_d1[1])
+        L2 = jnp.linalg.cholesky(model_d2[1])
+        L3 = jnp.linalg.cholesky(model_d3[1])
+        L4 = jnp.linalg.cholesky(model_d4[1])
+
+        w_d1 = model_d1[0] + L1 @ trans_eps[0]
+        w_d2 = model_d2[0] + L2 @ trans_eps[1]
+        w_d3 = model_d3[0] + L3 @ trans_eps[2]
+        w_d4 = model_d4[0] + L4 @ trans_eps[3]
+
+        state_diff = trans_output(w_d1, w_d2, w_d3, w_d4, model_input)
+
+        next_state = state_diff + prev_state + state_eps * (betas ** -0.5)
+
+        true_next_state = env.step(np.array([action]))[0]
+        the_true_states.append(true_next_state)
+        the_states.append(next_state)
+
+        cost += cost_function(next_state)
+
+        carry = (next_state, cost)
+
+    cost = carry[1]
+
+    return the_states, the_true_states
+
 
 ####################################### RP GRADIENTS ###################################
 
@@ -97,7 +137,6 @@ def policy_grad(
     model_d3, model_d4,
     env,
     horizon,
-    noise,
     state_epsilons,
     trans_epsilons,
 ):
@@ -109,7 +148,7 @@ def policy_grad(
                 grad(trajectory_value, 0),
                 # trajectory_value,
                 in_axes=(
-                    None, None, 0, None, None, None,
+                    None, None, 0, None, None,
                     None, None, None, 0, 0
                 )
             )
@@ -121,7 +160,6 @@ def policy_grad(
         model_d1, model_d2,
         model_d3, model_d4,
         time_steps,
-        noise,
         state_epsilons,
         trans_epsilons,
     )
@@ -130,8 +168,6 @@ def policy_grad(
     grads['mlp/~/linear_0']['b'] = grads['mlp/~/linear_0']['b'].mean(axis=0)
     grads['mlp/~/linear_1']['w'] = grads['mlp/~/linear_1']['w'].mean(axis=0)
     grads['mlp/~/linear_1']['b'] = grads['mlp/~/linear_1']['b'].mean(axis=0)
-    # grads['mlp/~/linear_2']['w'] = grads['mlp/~/linear_2']['w'].mean(axis=0)
-    # grads['mlp/~/linear_2']['b'] = grads['mlp/~/linear_2']['b'].mean(axis=0)
 
     return grads
  
@@ -141,33 +177,38 @@ def policy_grad(
 
 @jit
 def logpdf(
-    theta,
+    params,
     betas,
     model_d1, model_d2,
     model_d3, model_d4,
-    noise,
     time_steps,
-    zs,
+    trajectory,
     trans_epsilons,
 ):
     
     def body(prob, t):
         trans_eps = trans_epsilons[t - 1]
-
-        action = nonlinear_policy(zs[t - 1], theta)
-        model_input = jnp.stack([zs[t - 1], jnp.full((4,), action), jnp.ones((4,))]).T
+        action = nn_policy(trajectory[t - 1], params)
+        model_input = jnp.stack([trajectory[t - 1], jnp.full((4,), action), jnp.ones((4,))]).T
         
-        d1 = predict(*model_d1, betas[0], model_input[0], trans_eps[0])
-        d2 = predict(*model_d2, betas[1], model_input[1], trans_eps[1])
-        d3 = predict(*model_d3, betas[2], model_input[2], trans_eps[2])
-        d4 = predict(*model_d4, betas[3], model_input[3], trans_eps[3])
+        L1 = jnp.linalg.cholesky(model_d1[1])
+        L2 = jnp.linalg.cholesky(model_d2[1])
+        L3 = jnp.linalg.cholesky(model_d3[1])
+        L4 = jnp.linalg.cholesky(model_d4[1])
 
-        next_mean = jnp.array([d1, d2, d3, d4]) + zs[t - 1]
+        w_d1 = model_d1[0] + L1 @ trans_eps[0]
+        w_d2 = model_d2[0] + L2 @ trans_eps[1]
+        w_d3 = model_d3[0] + L3 @ trans_eps[2]
+        w_d4 = model_d4[0] + L4 @ trans_eps[3]
+        
+        state_diff = trans_output(w_d1, w_d2, w_d3, w_d4, model_input)
+
+        next_mean = state_diff + trajectory[t - 1]
 
         prob += jax.scipy.stats.multivariate_normal.logpdf(
-            zs[t],
+            trajectory[t],
             mean=next_mean,
-            cov= jnp.power(noise, 2) * jnp.eye(4),
+            cov= jnp.eye(4) * jnp.power(betas, -0.5),
         )
 
         return prob, None
@@ -179,8 +220,9 @@ def logpdf(
     return logpdf_zs
 
 
-def get_sequence_rewards(states):
-    rewards = jnp.array([cost_function(state) for state in states])
+@jit
+def get_sequence_rewards(trajectory):
+    rewards = jnp.array([cost_function(state) for state in trajectory])
     return rewards.sum()
 
 
@@ -190,32 +232,31 @@ def lr_gradients(
     model_d1, model_d2,
     model_d3, model_d4,
     horizon,
-    noise,
-    zs,
+    trajectories,
     trans_epsilons,
 ):
     time_steps = jnp.arange(1, horizon)
     grad_func = vmap(
-                jacobian(logpdf, 0),
+                grad(logpdf, 0),
                 # logpdf,
                 (
-                    None, None, None, None, None,
+                    None, None, None, None,
                     None, None, None, 0, 0
                 )
             )
-    logpdf_grads = grad_func(
+    lr_grads = grad_func(
         theta,
         beta,
         model_d1, model_d2,
         model_d3, model_d4,
-        noise,
         time_steps,
-        zs,
+        trajectories,
         trans_epsilons,
     )
+    rewards = vmap(get_sequence_rewards, (0,))(trajectories)
+    lr_grads['mlp/~/linear_0']['w'] = (lr_grads['mlp/~/linear_0']['w'] * rewards[:, jnp.newaxis, jnp.newaxis]).mean(axis=0)
+    lr_grads['mlp/~/linear_0']['b'] = (lr_grads['mlp/~/linear_0']['b'] * rewards[:, jnp.newaxis]).mean(axis=0)
+    lr_grads['mlp/~/linear_1']['w'] = (lr_grads['mlp/~/linear_1']['w'] * rewards[:, jnp.newaxis, jnp.newaxis]).mean(axis=0)
+    lr_grads['mlp/~/linear_1']['b'] = (lr_grads['mlp/~/linear_1']['b'] * rewards[:, jnp.newaxis]).mean(axis=0)
 
-    rewards = vmap(get_sequence_rewards, (0,))(zs)
-    lr_grads = logpdf_grads * rewards[:, jnp.newaxis]
-
-    return lr_grads.mean(axis=0)
-
+    return lr_grads
